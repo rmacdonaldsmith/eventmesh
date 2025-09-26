@@ -244,4 +244,191 @@ public class EventLogTests
         Assert.Equal("test-topic", result.Topic);
         Assert.NotNull(result.Headers); // Should be converted to empty dictionary
     }
+
+    [Fact]
+    public async Task AppendAsync_WithNullRecord_ShouldThrowArgumentNullException()
+    {
+        // Arrange
+        using var eventLog = new InMemoryEventLog();
+
+        // Act & Assert
+        await Assert.ThrowsAsync<ArgumentNullException>(() => eventLog.AppendAsync(null!));
+    }
+
+    [Fact]
+    public async Task ReadFromAsync_WithNegativeOffset_ShouldThrowArgumentException()
+    {
+        // Arrange
+        using var eventLog = new InMemoryEventLog();
+
+        // Act & Assert
+        await Assert.ThrowsAsync<ArgumentException>(() => eventLog.ReadFromAsync(-1, 10));
+    }
+
+    [Fact]
+    public async Task ReadFromAsync_WithNegativeMaxCount_ShouldThrowArgumentException()
+    {
+        // Arrange
+        using var eventLog = new InMemoryEventLog();
+
+        // Act & Assert
+        await Assert.ThrowsAsync<ArgumentException>(() => eventLog.ReadFromAsync(0, -1));
+    }
+
+    [Fact]
+    public async Task ReadFromAsync_WithZeroMaxCount_ShouldReturnEmpty()
+    {
+        // Arrange
+        using var eventLog = new InMemoryEventLog();
+        await eventLog.AppendAsync(new EventRecord { Payload = "test"u8.ToArray(), Topic = "test" });
+
+        // Act
+        var results = await eventLog.ReadFromAsync(0, 0);
+
+        // Assert
+        Assert.Empty(results);
+    }
+
+    [Fact]
+    public async Task ReplayAsync_WithNegativeOffset_ShouldThrowArgumentException()
+    {
+        // Arrange
+        using var eventLog = new InMemoryEventLog();
+
+        // Act & Assert
+        await Assert.ThrowsAsync<ArgumentException>(async () =>
+        {
+            await foreach (var _ in eventLog.ReplayAsync(-1))
+            {
+                // Should not reach here
+            }
+        });
+    }
+
+    [Fact]
+    public async Task AppendAsync_WithEmptyTopic_ShouldWork()
+    {
+        // Arrange
+        using var eventLog = new InMemoryEventLog();
+        var record = new EventRecord
+        {
+            Payload = "test"u8.ToArray(),
+            Topic = string.Empty
+        };
+
+        // Act
+        var result = await eventLog.AppendAsync(record);
+
+        // Assert
+        Assert.Equal(0L, result.Offset);
+        Assert.Equal(string.Empty, result.Topic);
+    }
+
+    [Fact]
+    public async Task AppendAsync_WithEmptyPayload_ShouldWork()
+    {
+        // Arrange
+        using var eventLog = new InMemoryEventLog();
+        var record = new EventRecord
+        {
+            Payload = Array.Empty<byte>(),
+            Topic = "test-topic"
+        };
+
+        // Act
+        var result = await eventLog.AppendAsync(record);
+
+        // Assert
+        Assert.Equal(0L, result.Offset);
+        Assert.Equal("test-topic", result.Topic);
+        Assert.Empty(result.Payload);
+    }
+
+    [Fact]
+    public async Task Operations_AfterDispose_ShouldStillWork()
+    {
+        // Note: For InMemoryEventLog, operations after dispose should still work
+        // but return empty/default results since we cleared the data
+
+        // Arrange
+        var eventLog = new InMemoryEventLog();
+        await eventLog.AppendAsync(new EventRecord { Payload = "test"u8.ToArray(), Topic = "test" });
+
+        // Act
+        eventLog.Dispose();
+
+        // Assert - Should work but return empty results
+        var endOffset = await eventLog.GetEndOffsetAsync();
+        Assert.Equal(0L, endOffset);
+
+        var readResults = await eventLog.ReadFromAsync(0, 10);
+        Assert.Empty(readResults);
+
+        var replayResults = new List<IEventRecord>();
+        await foreach (var record in eventLog.ReplayAsync(0))
+        {
+            replayResults.Add(record);
+        }
+        Assert.Empty(replayResults);
+
+        // Should be able to append new events after dispose
+        var newRecord = await eventLog.AppendAsync(new EventRecord { Payload = "new"u8.ToArray(), Topic = "new" });
+        Assert.Equal(0L, newRecord.Offset); // Starts fresh
+    }
+
+    [Fact]
+    public async Task ConcurrentAppends_ShouldHaveUniqueOffsets()
+    {
+        // Arrange
+        using var eventLog = new InMemoryEventLog();
+        const int taskCount = 10;
+
+        // Act - Run concurrent appends
+        var tasks = Enumerable.Range(0, taskCount)
+            .Select(i => eventLog.AppendAsync(new EventRecord
+            {
+                Payload = System.Text.Encoding.UTF8.GetBytes($"event{i}"),
+                Topic = $"topic{i}"
+            }))
+            .ToArray();
+
+        var results = await Task.WhenAll(tasks);
+
+        // Assert - All offsets should be unique
+        var offsets = results.Select(r => r.Offset).ToList();
+        Assert.Equal(taskCount, offsets.Count);
+        Assert.Equal(taskCount, offsets.Distinct().Count()); // No duplicates
+        Assert.True(offsets.All(o => o >= 0 && o < taskCount)); // All within expected range
+    }
+
+    [Fact]
+    public async Task ConcurrentReads_ShouldReturnConsistentResults()
+    {
+        // Arrange
+        using var eventLog = new InMemoryEventLog();
+        await eventLog.AppendAsync(new EventRecord { Payload = "event1"u8.ToArray(), Topic = "topic1" });
+        await eventLog.AppendAsync(new EventRecord { Payload = "event2"u8.ToArray(), Topic = "topic2" });
+        await eventLog.AppendAsync(new EventRecord { Payload = "event3"u8.ToArray(), Topic = "topic3" });
+
+        // Act - Run concurrent reads
+        var readTasks = Enumerable.Range(0, 5)
+            .Select(_ => eventLog.ReadFromAsync(0, 10))
+            .ToArray();
+
+        var results = await Task.WhenAll(readTasks);
+
+        // Assert - All reads should return the same data
+        Assert.All(results, result => Assert.Equal(3, result.Count));
+        var firstResult = results[0];
+        foreach (var result in results.Skip(1))
+        {
+            Assert.Equal(firstResult.Count, result.Count);
+            for (int i = 0; i < firstResult.Count; i++)
+            {
+                Assert.Equal(firstResult[i].Offset, result[i].Offset);
+                Assert.Equal(firstResult[i].Topic, result[i].Topic);
+                Assert.Equal(firstResult[i].Payload, result[i].Payload);
+            }
+        }
+    }
 }

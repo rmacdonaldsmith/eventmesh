@@ -10,6 +10,9 @@ public class InMemoryEventLog : IEventLog
 
     public Task<IEventRecord> AppendAsync(IEventRecord record, CancellationToken ct = default)
     {
+        if (record == null)
+            throw new ArgumentNullException(nameof(record));
+
         var eventRecord = record as EventRecord ?? new EventRecord
         {
             Topic = record.Topic,
@@ -31,6 +34,11 @@ public class InMemoryEventLog : IEventLog
 
     public Task<IReadOnlyList<IEventRecord>> ReadFromAsync(long startOffset, int maxCount, CancellationToken ct = default)
     {
+        if (startOffset < 0)
+            throw new ArgumentException("Start offset cannot be negative", nameof(startOffset));
+        if (maxCount < 0)
+            throw new ArgumentException("Max count cannot be negative", nameof(maxCount));
+
         var results = _events
             .Where(e => e.Offset >= startOffset)
             .Take(maxCount)
@@ -46,6 +54,9 @@ public class InMemoryEventLog : IEventLog
 
     public async IAsyncEnumerable<IEventRecord> ReplayAsync(long startOffset, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
+        if (startOffset < 0)
+            throw new ArgumentException("Start offset cannot be negative", nameof(startOffset));
+
         var events = _events.Where(e => e.Offset >= startOffset);
         foreach (var eventRecord in events)
         {
