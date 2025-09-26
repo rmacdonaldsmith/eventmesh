@@ -15,8 +15,14 @@ public class InMemoryEventLog : IEventLog
             Topic = record.Topic,
             Payload = record.Payload,
             Timestamp = record.Timestamp,
-            Headers = record.Headers
+            Headers = record.Headers ?? new Dictionary<string, string>()
         };
+
+        // Ensure headers are never null
+        if (eventRecord.Headers == null)
+        {
+            eventRecord = eventRecord with { Headers = new Dictionary<string, string>() };
+        }
 
         var storedRecord = eventRecord with { Offset = _nextOffset++ };
         _events.Add(storedRecord);
@@ -47,6 +53,7 @@ public class InMemoryEventLog : IEventLog
                 yield break;
 
             yield return eventRecord;
+            await Task.Yield(); // Make it properly async to avoid warning
         }
     }
 
@@ -59,5 +66,6 @@ public class InMemoryEventLog : IEventLog
     public void Dispose()
     {
         _events.Clear();
+        _nextOffset = 0;
     }
 }
